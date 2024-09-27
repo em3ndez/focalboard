@@ -3,12 +3,14 @@
 import * as fs from 'fs'
 import minimist from 'minimist'
 import {exit} from 'process'
-import {ArchiveUtils} from '../../webapp/src/blocks/archive'
+import {ArchiveUtils} from '../util/archive'
 import {Block} from '../../webapp/src/blocks/block'
+import {Board} from '../../webapp/src/blocks/board'
 import {IPropertyOption, IPropertyTemplate, createBoard} from '../../webapp/src/blocks/board'
 import {createBoardView} from '../../webapp/src/blocks/boardView'
 import {createCard} from '../../webapp/src/blocks/card'
 import {createTextBlock} from '../../webapp/src/blocks/textBlock'
+import {createCheckboxBlock} from '../../webapp/src/blocks/checkboxBlock'
 import {Trello} from './trello'
 import {Utils} from './utils'
 
@@ -33,7 +35,7 @@ function main() {
     const args: minimist.ParsedArgs = minimist(process.argv.slice(2))
 
     const inputFile = args['i']
-    const outputFile = args['o'] || 'archive.focalboard'
+    const outputFile = args['o'] || 'archive.boardarchive'
 
     if (!inputFile) {
         showHelp()
@@ -49,25 +51,25 @@ function main() {
     const input = JSON.parse(inputData) as Trello
 
     // Convert
-    const blocks = convert(input)
+    const [boards, blocks] = convert(input)
 
     // Save output
     // TODO: Stream output
-    const outputData = ArchiveUtils.buildBlockArchive(blocks)
+    const outputData = ArchiveUtils.buildBlockArchive(boards, blocks)
     fs.writeFileSync(outputFile, outputData)
 
     console.log(`Exported to ${outputFile}`)
 }
 
-function convert(input: Trello): Block[] {
+function convert(input: Trello): [Board[], Block[]] {
+    const boards: Board[] = []
     const blocks: Block[] = []
 
     // Board
     const board = createBoard()
     console.log(`Board: ${input.name}`)
-    board.rootId = board.id
     board.title = input.name
-    board.fields.description = input.desc
+    board.description = input.desc
 
     // Convert lists (columns) to a Select property
     const optionIdMap = new Map<string, string>()
@@ -91,14 +93,14 @@ function convert(input: Trello): Block[] {
         type: 'select',
         options
     }
-    board.fields.cardProperties = [cardProperty]
-    blocks.push(board)
+    board.cardProperties = [cardProperty]
+    boards.push(board)
 
     // Board view
     const view = createBoardView()
     view.title = 'Board View'
     view.fields.viewType = 'board'
-    view.rootId = board.id
+    view.boardId = board.id
     view.parentId = board.id
     blocks.push(view)
 
@@ -108,7 +110,7 @@ function convert(input: Trello): Block[] {
 
         const outCard = createCard()
         outCard.title = card.name
-        outCard.rootId = board.id
+        outCard.boardId = board.id
         outCard.parentId = board.id
 
         // Map lists to Select property options
@@ -129,22 +131,45 @@ function convert(input: Trello): Block[] {
             // console.log(`\t${card.desc}`)
             const text = createTextBlock()
             text.title = card.desc
-            text.rootId = board.id
+            text.boardId = board.id
             text.parentId = outCard.id
             blocks.push(text)
 
             outCard.fields.contentOrder = [text.id]
+        }
+
+        // Add Checklists
+        if (card.idChecklists && card.idChecklists.length > 0) {
+            card.idChecklists.forEach(checklistID => {
+                const lookup = input.checklists.find(e => e.id === checklistID)
+                if (lookup) {
+                    lookup.checkItems.forEach(trelloCheckBox=> {
+                        const checkBlock = createCheckboxBlock()
+                        checkBlock.title = trelloCheckBox.name
+                        if (trelloCheckBox.state === 'complete') {
+                            checkBlock.fields.value = true
+                        } else {
+                            checkBlock.fields.value = false
+                        }
+                        checkBlock.boardId = board.id
+                        checkBlock.parentId = outCard.id
+                        blocks.push(checkBlock)
+
+                        outCard.fields.contentOrder.push(checkBlock.id)
+                    })
+                }
+            })
         }
     })
 
     console.log('')
     console.log(`Found ${input.cards.length} card(s).`)
 
-    return blocks
+    return [boards, blocks]
 }
 
 function showHelp() {
-    console.log('import -i <input.json> -o [output.focalboard]')
+    console.log('import -i <input.json> -o [output.boardarchive]')
     exit(1)
 }
 
